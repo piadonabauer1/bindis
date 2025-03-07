@@ -51,16 +51,39 @@ def merge_bboxes(detections, iou_threshold=0.6):
             current_bbox = current['bbox']
             indices_to_merge = []
             for idx, other in enumerate(detections):
+                # Gleiche Klassen zusammenführen
                 if current['class_name'] == other['class_name']:
                     iou = compute_iou(current_bbox, other['bbox'])
                     if iou >= iou_threshold or is_inside(current_bbox, other['bbox']) or is_inside(other['bbox'], current_bbox):
                         print(f"IOU: {iou} - Merging {current_bbox} and {other['bbox']}")
                         indices_to_merge.append(idx)
 
+                # Spezielle Regeln für verschiedene Klassen
+                elif (current['class_name'] == 'bindi' and other['class_name'] == 'piercing') or \
+                     (current['class_name'] == 'piercing' and other['class_name'] == 'bindi'):
+                    iou = compute_iou(current_bbox, other['bbox'])
+                    if iou >= iou_threshold or is_inside(current_bbox, other['bbox']) or is_inside(other['bbox'], current_bbox):
+                        print(f"IOU: {iou} - Merging bindi and piercing, keeping bindi")
+                        indices_to_merge.append(idx)
+
+                elif (current['class_name'] == 'piercing' and other['class_name'] == 'acne') or \
+                     (current['class_name'] == 'acne' and other['class_name'] == 'piercing'):
+                    iou = compute_iou(current_bbox, other['bbox'])
+                    if iou >= iou_threshold or is_inside(current_bbox, other['bbox']) or is_inside(other['bbox'], current_bbox):
+                        print(f"IOU: {iou} - Merging piercing and acne, keeping piercing")
+                        indices_to_merge.append(idx)
+
+                elif (current['class_name'] == 'bindi' and other['class_name'] == 'acne') or \
+                     (current['class_name'] == 'acne' and other['class_name'] == 'bindi'):
+                    iou = compute_iou(current_bbox, other['bbox'])
+                    if iou >= iou_threshold or is_inside(current_bbox, other['bbox']) or is_inside(other['bbox'], current_bbox):
+                        print(f"IOU: {iou} - Merging bindi and acne, keeping bindi")
+                        indices_to_merge.append(idx)
+
+            # Merge the objects and decide which box remains based on area
             for idx in reversed(indices_to_merge):
                 match = detections.pop(idx)
 
-                # Entscheide, welche Box bleibt: die größere
                 if bbox_area(current_bbox) >= bbox_area(match['bbox']):
                     larger_bbox = current_bbox
                 else:
@@ -69,7 +92,7 @@ def merge_bboxes(detections, iou_threshold=0.6):
                 current_bbox = larger_bbox
                 current['confidence'] = max(current['confidence'], match['confidence'])
                 changed = True
-            
+
             merged_detections.append({
                 'bbox': current_bbox,
                 'confidence': current['confidence'],
@@ -82,13 +105,14 @@ def merge_bboxes(detections, iou_threshold=0.6):
     final_detections = []
     for detection in detections:
         if detection['class_name'] == 'acne':
-            bindi_detections = [d for d in detections if d['class_name'] == 'bindi']
+            bindi_detections = [d for d in detections if d['class_name'] in ('bindi', 'piercing')]
             if any(compute_iou(detection['bbox'], b['bbox']) > 0 for b in bindi_detections):
                 print(f"Removing acne: {detection['bbox']} due to overlap with bindi")
                 continue
         final_detections.append(detection)
     
     return final_detections
+
 
 
 # Utility functions for calculating position checks
@@ -116,8 +140,8 @@ def point_in_bbox(point, bbox):
 
 def filter_predictions(landmarks, predicted_objects, face_parts):
     try:
-        left_iris = np.array(landmarks[face_parts[5]][0])
-        right_iris = np.array(landmarks[face_parts[6]][0])
+        left_iris = np.array(landmarks[face_parts[0]][0])
+        right_iris = np.array(landmarks[face_parts[1]][0])
         nose = np.array(landmarks[face_parts[2]][0])
     except KeyError:
         return None
@@ -134,10 +158,16 @@ def filter_predictions(landmarks, predicted_objects, face_parts):
         bbox_center = np.array([(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2])
 
         if obj['class_name'] == 'bindi':
+            """
             if not (size_check(bbox, iris_length) and
                     above_line_check(bbox_center, left_iris, right_iris) and
                     corridor_check(bbox_center, left_iris, right_iris, iris_length, perp_vector)):
+                continue"
+            """
+            if not size_check(bbox, iris_length):
                 continue
+            if not above_line_check(bbox_center, left_iris, right_iris) or not corridor_check(bbox_center, left_iris, right_iris, iris_length, perp_vector):
+                obj['class_name'] = 'piercing'
 
         if obj['class_name'] == 'acne':
             # Filter out if any landmark is inside an 'acne' bbox
