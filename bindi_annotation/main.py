@@ -101,7 +101,7 @@ def merge_bboxes(detections, iou_threshold=0.6):
         
         detections = merged_detections
 
-    # Entferne 'acne', wenn sie sich mit 'bindi' überschneidet
+    # remove acne label if bindi was detected
     final_detections = []
     for detection in detections:
         if detection['class_name'] == 'acne':
@@ -128,10 +128,34 @@ def above_line_check(bbox_center, left_iris, right_iris):
     eye_line_y = np.interp(bbox_center[0], [left_iris[0], right_iris[0]], [left_iris[1], right_iris[1]])
     return bbox_center[1] <= eye_line_y
 
+"""
 def corridor_check(bbox_center, left_iris, right_iris, iris_length, perp_vector):
     left_distance = point_line_distance(bbox_center, left_iris, perp_vector)
     right_distance = point_line_distance(bbox_center, right_iris, perp_vector)
     return left_distance + right_distance <= iris_length
+"""
+
+def corridor_check(bbox, left_iris, right_iris, iris_length, perp_vector):
+    x1, y1, x2, y2 = bbox
+    bbox_points = np.array([
+        [x1, y1],  
+        [x2, y1],
+        [x1, y2],
+        [x2, y2],
+        [(x1 + x2) / 2, y1],
+        [(x1 + x2) / 2, y2],
+        [x1, (y1 + y2) / 2],
+        [x2, (y1 + y2) / 2],
+        [(x1 + x2) / 2, (y1 + y2) / 2]
+    ])
+
+    for point in bbox_points:
+        left_distance = point_line_distance(point, left_iris, perp_vector)
+        right_distance = point_line_distance(point, right_iris, perp_vector)
+        if left_distance + right_distance <= iris_length:
+            return True 
+
+    return False 
 
 def point_in_bbox(point, bbox):
     x, y = point
@@ -166,7 +190,7 @@ def filter_predictions(landmarks, predicted_objects, face_parts):
             """
             if not size_check(bbox, iris_length):
                 continue
-            if not above_line_check(bbox_center, left_iris, right_iris) or not corridor_check(bbox_center, left_iris, right_iris, iris_length, perp_vector):
+            if not above_line_check(bbox_center, left_iris, right_iris) or not corridor_check(bbox, left_iris, right_iris, iris_length, perp_vector):
                 obj['class_name'] = 'piercing'
 
         if obj['class_name'] == 'acne':
@@ -267,10 +291,12 @@ def main():
     save_imgs = os.path.join(OUTPUT_DIR, "img")
     save_jsons = os.path.join(OUTPUT_DIR, "json")
     save_vis = os.path.join(OUTPUT_DIR, "vis")
+    save_lm = os.path.join(OUTPUT_DIR, "lm")
 
     os.makedirs(save_imgs, exist_ok=True)
     os.makedirs(save_jsons, exist_ok=True)
     os.makedirs(save_vis, exist_ok=True)
+    os.makedirs(save_lm, exist_ok=True)
 
     acnedet = AcneDetection()
 
@@ -284,6 +310,17 @@ def main():
     face_parts = ["left_eye_landmarks", "right_eye_landmarks", "nose_landmarks",
               "mouth_landmarks", "all_landmarks", "left_iris_landmarks",
               "right_iris_landmarks"]
+    face_parts_of_interest = ["left_eye_landmarks", "right_eye_landmarks", "nose_landmarks",
+              "left_iris_landmarks", "right_iris_landmarks"]
+    
+    colors = [
+        (255, 0, 0),   # Blue
+        (0, 255, 0),   # Green
+        (0, 0, 255),   # Red
+        (255, 255, 0), # Cyan
+        (255, 0, 255), # Magenta
+        (0, 255, 255)  # Yellow
+    ]
 
     image_extensions = ["*.jpg", "*.jpeg", "*.png"]
     image_files = []
@@ -302,9 +339,21 @@ def main():
         detected_faces = face_detector.detect(image_pil) # output: image array
 
         for idx, face_array in enumerate(detected_faces):
+            image_name_with_idx = f"{os.path.splitext(image_name)[0]}_{idx}{os.path.splitext(image_name)[1]}"
 
             face_pil = Image.fromarray(face_array)
-            _, landmarks = face_landmark_detector.findMeshInFace(face_array)
+            image_lm, landmarks = face_landmark_detector.findMeshInFace(face_array)
+
+            for idx, face_part in enumerate(face_parts_of_interest):
+                try:
+                    color = colors[idx % len(colors)]  # Cycle through colors if there are more face parts than colors
+                    for landmark in landmarks[face_part]:
+                        cv2.circle(image_lm, (landmark[0], landmark[1]), 3, color, -1)
+                except KeyError:
+                    pass
+
+            image_lm = cv2.cvtColor(image_lm, cv2.COLOR_RGB2BGR)
+            cv2.imwrite(os.path.join(save_lm, image_name_with_idx), image_lm)
  
             try:
                 predicted_objects_dino = object_detector_dino.predict(face_pil, prompt=PROMPTS, confidence_threshold=0.4)
@@ -330,10 +379,7 @@ def main():
             if not filtered_predicted_objects:
                 continue
 
-            image_name_with_idx = f"{os.path.splitext(image_name)[0]}_{idx}{os.path.splitext(image_name)[1]}"
-
-            vis_path = OUTPUT_DIR + "/vis"  # direkt das Bild in 'vis/' speichern
-            object_detector_dino._visualize_and_save(face_array, filtered_predicted_objects, vis_path, image_name_with_idx)
+            object_detector_dino._visualize_and_save(face_array, filtered_predicted_objects, save_vis, image_name_with_idx)
 
             #filtered_predicted_objects_json = json.dumps(filtered_predicted_objects, indent=2)
             #print(filtered_predicted_objects_json)
