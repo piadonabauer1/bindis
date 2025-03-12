@@ -13,11 +13,13 @@ from PIL import Image
 from pathlib import Path
 from sklearn.metrics import pairwise_distances
 from scipy.spatial.distance import cdist
+from scipy.spatial import ConvexHull
 
 from face_landmarks import FaceDetection, FaceMeshDetector
 from GroundedSAM2.grounded_sam2_hf_model import GroundedSAM2Pipeline
 from GroundedSAM2.grounded_sam2_florence2_image_demo import Florence2Pipeline
 from AcneDetection.acne_detection import AcneDetection
+
 
 
 def compute_iou(bbox1, bbox2):
@@ -185,17 +187,33 @@ def point_in_bbox(landmark, bbox):
     x1, y1, x2, y2 = bbox
     return [(x1 <= x <= x2 and y1 <= y <= y2) for x, y in landmark]
 
-def detections_on_top(landmark, bbox):
-    center_y = (bbox[1] + bbox[3]) / 2
 
-    highest_point = max(landmark, key=lambda point: point[1])
-    highest_y = highest_point[1]
-    print(f"Center y point: {center_y}")
-    print(f"Highest y point: {highest_y}")
+def reorder_points(landmarks):
+    # Berechne den konvexen Rand (Convex Hull) der Punkte
+    hull = ConvexHull(landmarks)
+    
+    # Hole die Punkte des konvexen Rands in der richtigen Reihenfolge
+    landmarks_sorted = landmarks[hull.vertices]
+    
+    return landmarks_sorted
 
-    if center_y < highest_y:
-        return False
-    return True
+def bbox_in_landmarks(landmarks, bbox):
+    # Berechne den Mittelpunkt der bbox
+    x1, y1, x2, y2 = bbox
+    center_x = (x1 + x2) / 2
+    center_y = (y1 + y2) / 2
+    center_point = np.array([center_x, center_y])
+
+    # Stelle sicher, dass die landmarks als numpy Array vorliegen
+    landmarks = np.array(landmarks, dtype=np.int32)
+    
+    # Sortiere die landmarks basierend auf dem konvexen Rand
+    landmarks_sorted = reorder_points(landmarks)
+    
+    # Prüfe, ob der Mittelpunkt der bbox innerhalb des konvexen Rands (Polygon) liegt
+    result = cv2.pointPolygonTest(landmarks_sorted, tuple(center_point), False)
+    
+    return result >= 0 
 
 def filter_predictions(landmarks, predicted_objects, face_parts):
     try:
@@ -241,6 +259,10 @@ def filter_predictions(landmarks, predicted_objects, face_parts):
             continue
 
         if bbox[1] < 10:
+            continue
+
+        if not bbox_in_landmarks(all_landmarks, bbox):
+            print(f"{obj['class_name']} is outside of all landmarks.")
             continue
 
         #if obj['class_name'] != 'bindi' and above_line_check(bbox_center, left_iris, right_iris) and corridor_check(bbox, left_iris, right_iris, iris_length, perp_vector):
@@ -401,26 +423,30 @@ def main():
 
             image_lm = cv2.cvtColor(image_lm, cv2.COLOR_RGB2BGR)
             cv2.imwrite(os.path.join(save_lm, image_name_with_idx), image_lm)
-            
+
             no_bindi_found = False
+            combined_detections = []
+
             try:
-                predicted_objects_dino = object_detector_dino.predict(face_pil, prompt=PROMPTS, confidence_threshold=0.4)
-            except Exception as e:  # Replace with actual exceptions
+                predicted_objects_dino = object_detector_dino.predict(face_pil, prompt=PROMPTS, confidence_threshold=0.3)
+                combined_detections.extend(predicted_objects_dino)
+            except Exception as e:
                 no_bindi_found = True
-                print(f"Error occurred while predicting: {e}")
-            
+                print(f"Error occurred while predicting with DINO: {e}")
+
             try:
                 predicted_objects_florence2 = object_detector_florence2.predict(face_pil, PROMPTS.replace(".", " <and>"))
                 predicted_objects_florence2 = convert_detections_to_dicts(predicted_objects_florence2)
-            except Exception as e:  # Replace with actual exceptions
-                print(f"Error occurred while predicting: {e}")
-                if no_bindi_found:
+                combined_detections.extend(predicted_objects_florence2)  
+            except Exception as e:
+                print(f"Error occurred while predicting with Florence2: {e}")
+                if no_bindi_found and not combined_detections:
                     continue
 
-            acne_pred, _ = acnedet(img=face_array, threshold=0.2)
+            acne_pred, _ = acnedet(img=face_array, threshold=0.19)
             predicted_acne = format_acne_det(acne_pred)
+            combined_detections.extend(predicted_acne)
 
-            combined_detections = predicted_objects_dino + predicted_objects_florence2 + predicted_acne
             filtered_predicted_objects = filter_predictions(landmarks, combined_detections, face_parts)
             print(filtered_predicted_objects)
 
