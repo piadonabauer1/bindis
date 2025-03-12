@@ -7,6 +7,7 @@ import numpy as np
 import json
 import pycocotools.mask as mask_util
 import re
+import copy
 
 from PIL import Image
 from pathlib import Path
@@ -32,10 +33,33 @@ def compute_iou(bbox1, bbox2):
     iou = inter_area / float(area1 + area2 - inter_area)
     return iou
 
+"""
 def is_inside(inner, outer):
     x1, y1, x2, y2 = inner
     xb1, yb1, xb2, yb2 = outer
     return xb1 <= x1 <= xb2 and xb1 <= x2 <= xb2 and yb1 <= y1 <= yb2 and yb1 <= y2 <= yb2
+"""
+
+def intersection_area(box1, box2):
+    x1, y1, x2, y2 = box1
+    xb1, yb1, xb2, yb2 = box2
+
+    ix1 = max(x1, xb1)
+    iy1 = max(y1, yb1)
+    ix2 = min(x2, xb2)
+    iy2 = min(y2, yb2)
+
+    if ix1 < ix2 and iy1 < iy2:
+        return (ix2 - ix1) * (iy2 - iy1) 
+    else:
+        return 0  
+
+def is_inside(inner, outer, ratio=0.8):
+    box1_area = (inner[2] - inner[0]) * (inner[3] - inner[1])
+    overlap_area = intersection_area(inner, outer)
+
+    overlap_ratio = overlap_area / box1_area
+    return overlap_ratio >= ratio
 
 def bbox_area(bbox):
     x1, y1, x2, y2 = bbox
@@ -55,7 +79,7 @@ def merge_bboxes(detections, iou_threshold=0.6):
                 if current['class_name'] == other['class_name']:
                     iou = compute_iou(current_bbox, other['bbox'])
                     if iou >= iou_threshold or is_inside(current_bbox, other['bbox']) or is_inside(other['bbox'], current_bbox):
-                        print(f"IOU: {iou} - Merging {current_bbox} and {other['bbox']}")
+                        #print(f"IOU: {iou} - Merging {current_bbox} and {other['bbox']}")
                         indices_to_merge.append(idx)
 
                 # Spezielle Regeln für verschiedene Klassen
@@ -63,21 +87,21 @@ def merge_bboxes(detections, iou_threshold=0.6):
                      (current['class_name'] == 'piercing' and other['class_name'] == 'bindi'):
                     iou = compute_iou(current_bbox, other['bbox'])
                     if iou >= iou_threshold or is_inside(current_bbox, other['bbox']) or is_inside(other['bbox'], current_bbox):
-                        print(f"IOU: {iou} - Merging bindi and piercing, keeping bindi")
+                        #print(f"IOU: {iou} - Merging bindi and piercing, keeping bindi")
                         indices_to_merge.append(idx)
 
                 elif (current['class_name'] == 'piercing' and other['class_name'] == 'acne') or \
                      (current['class_name'] == 'acne' and other['class_name'] == 'piercing'):
                     iou = compute_iou(current_bbox, other['bbox'])
                     if iou >= iou_threshold or is_inside(current_bbox, other['bbox']) or is_inside(other['bbox'], current_bbox):
-                        print(f"IOU: {iou} - Merging piercing and acne, keeping piercing")
+                        #print(f"IOU: {iou} - Merging piercing and acne, keeping piercing")
                         indices_to_merge.append(idx)
 
                 elif (current['class_name'] == 'bindi' and other['class_name'] == 'acne') or \
                      (current['class_name'] == 'acne' and other['class_name'] == 'bindi'):
                     iou = compute_iou(current_bbox, other['bbox'])
                     if iou >= iou_threshold or is_inside(current_bbox, other['bbox']) or is_inside(other['bbox'], current_bbox):
-                        print(f"IOU: {iou} - Merging bindi and acne, keeping bindi")
+                        #print(f"IOU: {iou} - Merging bindi and acne, keeping bindi")
                         indices_to_merge.append(idx)
 
             # Merge the objects and decide which box remains based on area
@@ -107,7 +131,7 @@ def merge_bboxes(detections, iou_threshold=0.6):
         if detection['class_name'] == 'acne':
             bindi_detections = [d for d in detections if d['class_name'] in ('bindi', 'piercing')]
             if any(compute_iou(detection['bbox'], b['bbox']) > 0 for b in bindi_detections):
-                print(f"Removing acne: {detection['bbox']} due to overlap with bindi")
+                #print(f"Removing acne: {detection['bbox']} due to overlap with bindi")
                 continue
         final_detections.append(detection)
     
@@ -122,7 +146,7 @@ def point_line_distance(point, line_point, line_direction):
 
 def size_check(bbox, iris_length):
     x1, y1, x2, y2 = bbox
-    return max(x2 - x1, y2 - y1) <= 0.8 * iris_length
+    return max(x2 - x1, y2 - y1) <= 0.75 * iris_length
 
 def above_line_check(bbox_center, left_iris, right_iris):
     eye_line_y = np.interp(bbox_center[0], [left_iris[0], right_iris[0]], [left_iris[1], right_iris[1]])
@@ -157,16 +181,28 @@ def corridor_check(bbox, left_iris, right_iris, iris_length, perp_vector):
 
     return False 
 
-def point_in_bbox(point, bbox):
-    x, y = point
+def point_in_bbox(landmark, bbox):
     x1, y1, x2, y2 = bbox
-    return x1 <= x <= x2 and y1 <= y <= y2
+    return [(x1 <= x <= x2 and y1 <= y <= y2) for x, y in landmark]
+
+def detections_on_top(landmark, bbox):
+    center_y = (bbox[1] + bbox[3]) / 2
+
+    highest_point = max(landmark, key=lambda point: point[1])
+    highest_y = highest_point[1]
+    print(f"Center y point: {center_y}")
+    print(f"Highest y point: {highest_y}")
+
+    if center_y < highest_y:
+        return False
+    return True
 
 def filter_predictions(landmarks, predicted_objects, face_parts):
     try:
         left_iris = np.array(landmarks[face_parts[0]][0])
         right_iris = np.array(landmarks[face_parts[1]][0])
-        nose = np.array(landmarks[face_parts[2]][0])
+        nose = np.array(landmarks[face_parts[2]])
+        all_landmarks = np.array(landmarks[face_parts[4]])
     except KeyError:
         return None
 
@@ -180,6 +216,9 @@ def filter_predictions(landmarks, predicted_objects, face_parts):
     for obj in predicted_objects:
         bbox = obj['bbox']
         bbox_center = np.array([(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2])
+        #print(f"Class name: {obj['class_name']}")
+        #print(f"Above line check: {above_line_check(bbox_center, left_iris, right_iris)}")
+        #print(f"Corridor check: {corridor_check(bbox, left_iris, right_iris, iris_length, perp_vector)}")
 
         if obj['class_name'] == 'bindi':
             """
@@ -191,21 +230,27 @@ def filter_predictions(landmarks, predicted_objects, face_parts):
             if not size_check(bbox, iris_length):
                 continue
             if not above_line_check(bbox_center, left_iris, right_iris) or not corridor_check(bbox, left_iris, right_iris, iris_length, perp_vector):
-                obj['class_name'] = 'piercing'
-
-        if obj['class_name'] == 'acne':
-            # Filter out if any landmark is inside an 'acne' bbox
-            if any(point_in_bbox(landmark, bbox) for landmark in [left_iris, right_iris, nose]):
+                #obj['class_name'] = 'piercing'
                 continue
+
+        #if obj['class_name'] == 'acne':
+            # Filter out if any landmark is inside an 'acne' bbox
+        
+        if any(point_in_bbox(nose, bbox)):
+            print(f"{obj['class_name']} is on landmark and was removed.")
+            continue
+
+        if bbox[1] < 10:
+            continue
+
+        #if obj['class_name'] != 'bindi' and above_line_check(bbox_center, left_iris, right_iris) and corridor_check(bbox, left_iris, right_iris, iris_length, perp_vector):
+        #    obj['class_name'] = 'bindi'
 
         filtered_predictions.append(obj)
 
     if filtered_predictions:
         return merge_bboxes(filtered_predictions)
     return filtered_predictions
-
-
-
 
 
 def format_acne_det(acne_pred):
@@ -332,6 +377,7 @@ def main():
     # Process each image file
     for image_path in image_files:
         image_name = os.path.basename(image_path)
+        print(image_name)
 
         image_cv2 = cv2.imread(image_path)
         image_pil = Image.fromarray(cv2.cvtColor(image_cv2, cv2.COLOR_BGR2RGB))
@@ -342,7 +388,8 @@ def main():
             image_name_with_idx = f"{os.path.splitext(image_name)[0]}_{idx}{os.path.splitext(image_name)[1]}"
 
             face_pil = Image.fromarray(face_array)
-            image_lm, landmarks = face_landmark_detector.findMeshInFace(face_array)
+            image, landmarks = face_landmark_detector.findMeshInFace(face_array)
+            image_lm = copy.deepcopy(image)
 
             for idx, face_part in enumerate(face_parts_of_interest):
                 try:
@@ -354,20 +401,21 @@ def main():
 
             image_lm = cv2.cvtColor(image_lm, cv2.COLOR_RGB2BGR)
             cv2.imwrite(os.path.join(save_lm, image_name_with_idx), image_lm)
- 
+            
+            no_bindi_found = False
             try:
                 predicted_objects_dino = object_detector_dino.predict(face_pil, prompt=PROMPTS, confidence_threshold=0.4)
-            except ValueError as e:  # Replace with actual exceptions
+            except Exception as e:  # Replace with actual exceptions
+                no_bindi_found = True
                 print(f"Error occurred while predicting: {e}")
-                continue
             
             try:
                 predicted_objects_florence2 = object_detector_florence2.predict(face_pil, PROMPTS.replace(".", " <and>"))
                 predicted_objects_florence2 = convert_detections_to_dicts(predicted_objects_florence2)
-                
-            except ValueError as e:  # Replace with actual exceptions
+            except Exception as e:  # Replace with actual exceptions
                 print(f"Error occurred while predicting: {e}")
-                continue
+                if no_bindi_found:
+                    continue
 
             acne_pred, _ = acnedet(img=face_array, threshold=0.2)
             predicted_acne = format_acne_det(acne_pred)
