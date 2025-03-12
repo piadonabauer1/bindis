@@ -17,11 +17,26 @@ class FaceDetection:
         results = Detections.from_ultralytics(output[0])
 
         faces = []
+        image = np.array(pil_img)
+
         for face_xyxy in results.xyxy:
             x1, y1, x2, y2 = map(int, face_xyxy)
-            image = np.array(pil_img)
-            image = image[y1:y2, x1:x2]
-            faces.append(image)
+
+            # compute width and height, extract maximum length
+            width, height = x2 - x1, y2 - y1
+            max_size = max(width, height)
+
+            center_x, center_y = (x1 + x2) // 2, (y1 + y2) // 2
+
+            # calculate new coordinates for quadratic bounding box
+            new_x1 = max(center_x - max_size // 2, 0)
+            new_y1 = max(center_y - max_size // 2, 0)
+            new_x2 = min(center_x + max_size // 2, image.shape[1])
+            new_y2 = min(center_y + max_size // 2, image.shape[0])
+
+            face_crop = image[new_y1:new_y2, new_x1:new_x2]
+            faces.append(face_crop)
+
         return faces
         
 
