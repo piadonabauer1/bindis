@@ -2,17 +2,12 @@ import argparse
 import os
 import glob
 import cv2
-import sys
 import numpy as np
 import json
-import pycocotools.mask as mask_util
 import re
 import copy
 
 from PIL import Image
-from pathlib import Path
-from sklearn.metrics import pairwise_distances
-from scipy.spatial.distance import cdist
 from scipy.spatial import ConvexHull
 
 from face_landmarks import FaceDetection, FaceMeshDetector
@@ -189,42 +184,71 @@ def point_in_bbox(landmark, bbox):
 
 
 def reorder_points(landmarks):
-    # Berechne den konvexen Rand (Convex Hull) der Punkte
     hull = ConvexHull(landmarks)
-    
-    # Hole die Punkte des konvexen Rands in der richtigen Reihenfolge
     landmarks_sorted = landmarks[hull.vertices]
-    
     return landmarks_sorted
 
 def bbox_in_landmarks(landmarks, bbox):
-    # Berechne den Mittelpunkt der bbox
     x1, y1, x2, y2 = bbox
     center_x = (x1 + x2) / 2
     center_y = (y1 + y2) / 2
     center_point = np.array([center_x, center_y])
-
-    # Stelle sicher, dass die landmarks als numpy Array vorliegen
     landmarks = np.array(landmarks, dtype=np.int32)
-    
-    # Sortiere die landmarks basierend auf dem konvexen Rand
     landmarks_sorted = reorder_points(landmarks)
-    
-    # Prüfe, ob der Mittelpunkt der bbox innerhalb des konvexen Rands (Polygon) liegt
     result = cv2.pointPolygonTest(landmarks_sorted, tuple(center_point), False)
-    
     return result >= 0 
+
+def in_between_nose_mouth(nose, mouth, bbox):
+    nose_bottom = max(nose, key=lambda p: p[1])
+    mouth_top = min(mouth, key=lambda p: p[1])
+
+    region_top = nose_bottom[1]
+    region_bottom = mouth_top[1]
+
+    region_left = max(min(nose, key=lambda p: p[0])[0], min(mouth, key=lambda p: p[0])[0])
+    region_right = min(max(nose, key=lambda p: p[0])[0], max(mouth, key=lambda p: p[0])[0])
+
+    bbox_top = bbox[1]  
+    bbox_bottom = bbox[3] 
+    bbox_left = bbox[0] 
+    bbox_right = bbox[2]
+
+    overlap_top = max(bbox_top, region_top)
+    overlap_bottom = min(bbox_bottom, region_bottom)
+    overlap_height = max(0, overlap_bottom - overlap_top) 
+
+    bbox_height = bbox_bottom - bbox_top
+    region_height = region_bottom - region_top
+
+    overlap_left = max(bbox_left, region_left)
+    overlap_right = min(bbox_right, region_right)
+    overlap_width = max(0, overlap_right - overlap_left) 
+
+    bbox_width = bbox_right - bbox_left
+    region_width = region_right - region_left
+
+    overlap_ratio_bbox_height = overlap_height / bbox_height
+    overlap_ratio_bbox_width = overlap_width / bbox_width
+
+    if overlap_ratio_bbox_height >= 0.5 and overlap_ratio_bbox_width >= 0.5:
+       #print(f"Overlaps with nose-mouth region and was removed.")
+        return True
+    return False
+
 
 def filter_predictions(landmarks, predicted_objects, face_parts):
     try:
-        left_iris = np.array(landmarks[face_parts[0]][0])
-        right_iris = np.array(landmarks[face_parts[1]][0])
+        left_eye = np.array(landmarks[face_parts[0]][0])
+        right_eye = np.array(landmarks[face_parts[1]][0])
         nose = np.array(landmarks[face_parts[2]])
         all_landmarks = np.array(landmarks[face_parts[4]])
+        left_iris = np.array(landmarks[face_parts[5]])
+        right_iris = np.array(landmarks[face_parts[6]])
+        mouth = np.array(landmarks[face_parts[3]])
     except KeyError:
         return None
 
-    iris_vector = right_iris - left_iris
+    iris_vector = right_eye - left_eye
     iris_length = np.linalg.norm(iris_vector)
     perp_vector = np.array([-iris_vector[1], iris_vector[0]])
     perp_vector = perp_vector.astype(float) / np.linalg.norm(perp_vector)
@@ -247,26 +271,20 @@ def filter_predictions(landmarks, predicted_objects, face_parts):
             """
             if not size_check(bbox, iris_length):
                 continue
-            if not above_line_check(bbox_center, left_iris, right_iris) or not corridor_check(bbox, left_iris, right_iris, iris_length, perp_vector):
+            if not above_line_check(bbox_center, left_eye, right_eye) or not corridor_check(bbox, left_eye, right_eye, iris_length, perp_vector):
                 #obj['class_name'] = 'piercing'
                 continue
-
-        #if obj['class_name'] == 'acne':
-            # Filter out if any landmark is inside an 'acne' bbox
         
-        if any(point_in_bbox(nose, bbox)):
+        if any(point_in_bbox(left_iris, bbox)) or any(point_in_bbox(right_iris, bbox)) or any(point_in_bbox(nose, bbox)) :
             print(f"{obj['class_name']} is on landmark and was removed.")
-            continue
-
-        if bbox[1] < 10:
             continue
 
         if not bbox_in_landmarks(all_landmarks, bbox):
             print(f"{obj['class_name']} is outside of all landmarks.")
             continue
 
-        #if obj['class_name'] != 'bindi' and above_line_check(bbox_center, left_iris, right_iris) and corridor_check(bbox, left_iris, right_iris, iris_length, perp_vector):
-        #    obj['class_name'] = 'bindi'
+        if obj['class_name'] == 'acne' and in_between_nose_mouth(nose, mouth, bbox):
+            continue
 
         filtered_predictions.append(obj)
 
@@ -289,12 +307,6 @@ def format_acne_det(acne_pred):
     
     return detections
 
-
-@staticmethod
-def _mask_to_rle(mask):
-    rle = mask_util.encode(np.array(mask[:, :, None], order="F", dtype="uint8"))[0]
-    rle["counts"] = rle["counts"].decode("utf-8")
-    return rle
 
 # save cropped face as jpg and predictions within json
 def save(image, predictions, base_name, save_imgs, save_jsons):
@@ -378,7 +390,7 @@ def main():
               "mouth_landmarks", "all_landmarks", "left_iris_landmarks",
               "right_iris_landmarks"]
     face_parts_of_interest = ["left_eye_landmarks", "right_eye_landmarks", "nose_landmarks",
-              "left_iris_landmarks", "right_iris_landmarks"]
+              "left_iris_landmarks", "right_iris_landmarks", "mouth_landmarks"]
     
     colors = [
         (255, 0, 0),   # Blue
@@ -428,7 +440,7 @@ def main():
             combined_detections = []
 
             try:
-                predicted_objects_dino = object_detector_dino.predict(face_pil, prompt=PROMPTS, confidence_threshold=0.3)
+                predicted_objects_dino = object_detector_dino.predict(face_pil, prompt=PROMPTS, confidence_threshold=0.2)
                 combined_detections.extend(predicted_objects_dino)
             except Exception as e:
                 no_bindi_found = True
@@ -455,9 +467,8 @@ def main():
 
             object_detector_dino._visualize_and_save(face_array, filtered_predicted_objects, save_vis, image_name_with_idx)
 
-            #filtered_predicted_objects_json = json.dumps(filtered_predicted_objects, indent=2)
-            #print(filtered_predicted_objects_json)
-            save(face_array, filtered_predicted_objects, image_name_with_idx, save_imgs, save_jsons)
+            resized_image = cv2.resize(image, (1024, 1024), interpolation=cv2.INTER_LANCZOS4)
+            save(resized_image, filtered_predicted_objects, image_name_with_idx, save_imgs, save_jsons)
 
 
 if __name__ == "__main__":
