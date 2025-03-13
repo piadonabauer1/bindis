@@ -3,8 +3,6 @@ import cv2
 from huggingface_hub import hf_hub_download
 from ultralytics import YOLO
 from supervision import Detections
-from PIL import Image
-import pandas as pd
 import numpy as np
 
 class FaceDetection:
@@ -22,13 +20,13 @@ class FaceDetection:
         for face_xyxy in results.xyxy:
             x1, y1, x2, y2 = map(int, face_xyxy)
 
-            # compute width and height, extract maximum length
+            # Compute width and height, extract maximum length
             width, height = x2 - x1, y2 - y1
             max_size = max(width, height)
 
             center_x, center_y = (x1 + x2) // 2, (y1 + y2) // 2
 
-            # calculate new coordinates for quadratic bounding box
+            # Calculcate new coordinates for quadratic bounding box
             new_x1 = max(center_x - max_size // 2, 0)
             new_y1 = max(center_y - max_size // 2, 0)
             new_x2 = min(center_x + max_size // 2, image.shape[1])
@@ -40,7 +38,7 @@ class FaceDetection:
         return faces
         
 
-# code from https://medium.com/@Mert.A/detect-eyes-nose-and-mouth-with-mediapipe-bbfdf7a61f21
+# Code from https://medium.com/@Mert.A/detect-eyes-nose-and-mouth-with-mediapipe-bbfdf7a61f21
 class FaceMeshDetector:
 
     def __init__(self, static_image_mode=False, max_num_faces=1, refine_landmarks=False, min_detection_con=0.5,
