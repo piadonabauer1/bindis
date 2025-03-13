@@ -1,6 +1,6 @@
 # Bindi Detection Dataset Creation
 
-This repository provides the process for creating a new Bindi detection dataset using open-world object detection models.
+This repository provides the process for creating a new Bindi detection dataset using open-world object detection models. The resulting dataset can be found on [Google Drive](https://drive.google.com/drive/folders/10go6Vu6AM4S4tfWyE02AJN4Pg6E6q24q?usp=sharing).
 
 ## Dataset
 
